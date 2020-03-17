@@ -500,51 +500,6 @@ func TestTaskRunner_TaskEnv_Chroot(t *testing.T) {
 	require.Equalf(exp, string(stdout), "expected: %s\n\nactual: %s\n", exp, stdout)
 }
 
-// TestTaskRunner_TaskEnv_Image asserts image drivers use chroot paths and
-// not host paths. Host env vars should also be excluded.
-func TestTaskRunner_TaskEnv_Image(t *testing.T) {
-	ctestutil.DockerCompatible(t)
-	t.Parallel()
-	require := require.New(t)
-
-	alloc := mock.BatchAlloc()
-	task := alloc.Job.TaskGroups[0].Tasks[0]
-	task.Driver = "docker"
-	task.Config = map[string]interface{}{
-		"image":        "redis:3.2-alpine",
-		"network_mode": "none",
-		"command":      "sh",
-		"args": []string{"-c", "echo $NOMAD_ALLOC_DIR; " +
-			"echo $NOMAD_TASK_DIR; " +
-			"echo $NOMAD_SECRETS_DIR; " +
-			"echo $PATH",
-		},
-	}
-
-	// Expect chroot paths and image specific PATH
-	exp := `/alloc
-/local
-/secrets
-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-`
-
-	tr, conf, cleanup := runTestTaskRunner(t, alloc, task.Name)
-	defer cleanup()
-
-	// Wait for task to exit
-	select {
-	case <-tr.WaitCh():
-	case <-time.After(15 * time.Second):
-		require.Fail("timeout waiting for task to exit")
-	}
-
-	// Read stdout
-	p := filepath.Join(conf.TaskDir.LogDir, task.Name+".stdout.0")
-	stdout, err := ioutil.ReadFile(p)
-	require.NoError(err)
-	require.Equalf(exp, string(stdout), "expected: %s\n\nactual: %s\n", exp, stdout)
-}
-
 // TestTaskRunner_TaskEnv_None asserts raw_exec uses host paths and env vars.
 func TestTaskRunner_TaskEnv_None(t *testing.T) {
 	t.Parallel()

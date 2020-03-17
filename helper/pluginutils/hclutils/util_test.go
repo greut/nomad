@@ -138,36 +138,3 @@ func TestParseUnknown(t *testing.T) {
 		})
 	}
 }
-
-func TestParseInvalid(t *testing.T) {
-	dockerDriver := new(docker.Driver)
-	dockerSpec, err := dockerDriver.TaskConfigSchema()
-	require.NoError(t, err)
-	spec, diags := hclspecutils.Convert(dockerSpec)
-	require.False(t, diags.HasErrors())
-
-	cases := []struct {
-		name string
-		hcl  string
-	}{
-		{
-			"invalid_field",
-			`config { image = "redis:3.2" bad_key = "whatever"}`,
-		},
-	}
-
-	vars := map[string]cty.Value{}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			inter := hclutils.HclConfigToInterface(t, c.hcl)
-
-			ctyValue, diag, errs := hclutils.ParseHclInterface(inter, spec, vars)
-			t.Logf("parsed: %# v", pretty.Formatter(ctyValue))
-
-			require.NotNil(t, errs)
-			require.True(t, diag.HasErrors())
-			require.Contains(t, errs[0].Error(), "Invalid label")
-		})
-	}
-}
