@@ -37,14 +37,6 @@ jobs:
     exclude_packages: "./api|./client|./drivers/docker|./drivers/exec|./drivers/shared/executor|./nomad|./devices"
     filters: *backend_branches_filter
 - test-machine:
-    name: "test-docker"
-    test_packages: "./drivers/docker"
-    # docker is misbehaving in docker-machine-recent image
-    # and we get unexpected failures
-    # e.g. https://circleci.com/gh/hashicorp/nomad/3854
-    executor: go-machine
-    filters: *backend_branches_filter
-- test-machine:
     name: "test-exec"
     test_packages: "./drivers/exec"
     filters: *backend_branches_filter
