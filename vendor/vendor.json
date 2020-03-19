@@ -402,6 +402,7 @@
 		{"path":"golang.org/x/net/http2","checksumSHA1":"kKuxyoDujo5CopTxAvvZ1rrLdd0=","revision":"ab5485076ff3407ad2d02db054635913f017b0ed","revisionTime":"2017-07-19T21:11:51Z"},
 		{"path":"golang.org/x/net/http2/hpack","checksumSHA1":"ezWhc7n/FtqkLDQKeU2JbW+80tE=","revision":"ab5485076ff3407ad2d02db054635913f017b0ed","revisionTime":"2017-07-19T21:11:51Z"},
 		{"path":"golang.org/x/net/idna","checksumSHA1":"g/Z/Ka0VgJESgQK7/SJCjm/aX0I=","revision":"ab5485076ff3407ad2d02db054635913f017b0ed","revisionTime":"2017-07-19T21:11:51Z"},
+		{"path":"golang.org/x/net/internal/socks","checksumSHA1":"eIoaD6Kj5iiWn4oxbJDeev/2YSA=","revision":"244492dfa37ae2ce87222fd06250a03160745faa","revisionTime":"2020-02-27T18:31:54Z"},
 		{"path":"golang.org/x/net/internal/timeseries","checksumSHA1":"UxahDzW2v4mf/+aFxruuupaoIwo=","revision":"ab5485076ff3407ad2d02db054635913f017b0ed","revisionTime":"2017-07-19T21:11:51Z"},
 		{"path":"golang.org/x/net/lex/httplex","checksumSHA1":"3xyuaSNmClqG4YWC7g0isQIbUTc=","revision":"ab5485076ff3407ad2d02db054635913f017b0ed","revisionTime":"2017-07-19T21:11:51Z"},
 		{"path":"golang.org/x/net/trace","checksumSHA1":"u/r66lwYfgg682u5hZG7/E7+VCY=","revision":"ab5485076ff3407ad2d02db054635913f017b0ed","revisionTime":"2017-07-19T21:11:51Z"},
