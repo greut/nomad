@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/docker/docker/pkg/ioutils"
 	cstructs "github.com/hashicorp/nomad/client/structs"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/ugorji/go/codec"
@@ -359,7 +358,7 @@ func (s *HTTPServer) fsStreamImpl(resp http.ResponseWriter,
 	}()
 
 	// Create an output that gets flushed on every write
-	output := ioutils.NewWriteFlusher(resp)
+	output := NewWriteFlusher(resp)
 
 	// Create a channel that decodes the results
 	errCh := make(chan HTTPCodedError)
