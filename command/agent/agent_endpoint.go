@@ -238,7 +238,7 @@ func (s *HTTPServer) AgentMonitor(resp http.ResponseWriter, req *http.Request) (
 	}()
 
 	// Create an output that gets flushed on every write
-	output := ioutils.NewWriteFlusher(resp)
+	output := NewWriteFlusher(resp)
 
 	// create an error channel to handle errors
 	errCh := make(chan HTTPCodedError, 2)
