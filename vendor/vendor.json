@@ -89,6 +89,7 @@
 		{"path":"github.com/circonus-labs/circonusllhist","checksumSHA1":"VbfeVqeOM+dTNxCmpvmYS0LwQn0=","revision":"7d649b46cdc2cd2ed102d350688a75a4fd7778c6","revisionTime":"2016-11-21T13:51:53Z"},
 		{"path":"github.com/containerd/console","checksumSHA1":"Lc9okmPYuvnmj2yWbW/ioFh2LJE=","revision":"8375c3424e4d7b114e8a90a4a40c8e1b40d1d4e6","revisionTime":"2019-12-19T16:52:38Z"},
 		{"path":"github.com/containerd/containerd/errdefs","checksumSHA1":"ru5eKWdLzXfpNRL+Mi1bxbmY8DU=","revision":"14fbcd886f6e971d86f6e3bed43298491d89f393","revisionTime":"2020-03-14T00:01:32Z"},
+		{"path":"github.com/docker/go-units","checksumSHA1":"uJpTEqskmHWciK0+gjsnpRHXq7k=","revision":"519db1ee28dcc9fd2474ae59fca29a810482bfb1","revisionTime":"2019-04-23T14:49:23Z","version":"v0.4.0","versionExact":"v0.4.0"},
 		{"path":"github.com/dustin/go-humanize","checksumSHA1":"xteP9Px90oMrg/HZuqvZkpXCR+s=","revision":"8929fe90cee4b2cb9deb468b51fb34eba64d1bf0"},
 		{"path":"github.com/elazarl/go-bindata-assetfs","checksumSHA1":"7DxViusFRJ7UPH0jZqYatwDrOkY=","revision":"30f82fa23fd844bd5bb1e5f216db87fd77b5eb43","revisionTime":"2017-02-27T21:27:28Z"},
 		{"path":"github.com/fatih/color","checksumSHA1":"VsE3zx2d8kpwj97TWhYddzAwBrY=","revision":"507f6050b8568533fb3f5504de8e5205fa62a114","revisionTime":"2018-02-13T13:34:03Z"},
