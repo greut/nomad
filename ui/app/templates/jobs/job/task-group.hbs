@@ -5,8 +5,9 @@
   </ul>
 </div>
 <section class="section">
-  <h1 class="title">
-    {{model.name}}
+  <h1 class="title with-flex">
+    <span>{{model.name}}</span>
+    {{exec/open-button job=model.job taskGroup=model}}
   </h1>
 
   <div class="boxed-section is-small">
@@ -125,7 +126,15 @@
           {{/t.head}}
           {{#t.body as |row|}}
             <tr data-test-volume>
-              <td data-test-volume-name>{{row.model.name}}</td>
+              <td data-test-volume-name>
+                {{#if row.model.isCSI}}
+                  {{#link-to "csi.volumes.volume" row.model.name (query-params volumeNamespace=row.model.namespace.id)}}
+                    {{row.model.name}}
+                  {{/link-to}}
+                {{else}}
+                  {{row.model.name}}
+                {{/if}}
+              </td>
               <td data-test-volume-type>{{row.model.type}}</td>
               <td data-test-volume-source>{{row.model.source}}</td>
               <td data-test-volume-permissions>{{if row.model.readOnly "Read" "Read/Write"}}</td>

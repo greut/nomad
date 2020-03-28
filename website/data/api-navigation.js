@@ -21,12 +21,15 @@ export default [
   'nodes',
   'metrics',
   'operator',
+  'plugins',
   'quotas',
   'regions',
+  'scaling-policies',
   'search',
   'sentinel-policies',
   'status',
   'system',
   'ui',
-  'validate'
+  'validate',
+  'volumes'
 ]

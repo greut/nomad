@@ -66,6 +66,7 @@ func parseTask(item *ast.ObjectItem) (*api.Task, error) {
 		"logs",
 		"meta",
 		"resources",
+		"restart",
 		"service",
 		"shutdown_delay",
 		"template",
@@ -74,6 +75,7 @@ func parseTask(item *ast.ObjectItem) (*api.Task, error) {
 		"kill_signal",
 		"kind",
 		"volume_mount",
+		"csi_plugin",
 	}
 	if err := helper.CheckHCLKeys(listVal, valid); err != nil {
 		return nil, err
@@ -93,10 +95,12 @@ func parseTask(item *ast.ObjectItem) (*api.Task, error) {
 	delete(m, "logs")
 	delete(m, "meta")
 	delete(m, "resources")
+	delete(m, "restart")
 	delete(m, "service")
 	delete(m, "template")
 	delete(m, "vault")
 	delete(m, "volume_mount")
+	delete(m, "csi_plugin")
 
 	// Build the task
 	var t api.Task
@@ -133,6 +137,25 @@ func parseTask(item *ast.ObjectItem) (*api.Task, error) {
 		}
 
 		t.Services = services
+	}
+
+	if o := listVal.Filter("csi_plugin"); len(o.Items) > 0 {
+		if len(o.Items) != 1 {
+			return nil, fmt.Errorf("csi_plugin -> Expected single stanza, got %d", len(o.Items))
+		}
+		i := o.Elem().Items[0]
+
+		var m map[string]interface{}
+		if err := hcl.DecodeObject(&m, i.Val); err != nil {
+			return nil, err
+		}
+
+		var cfg api.TaskCSIPluginConfig
+		if err := mapstructure.WeakDecode(m, &cfg); err != nil {
+			return nil, err
+		}
+
+		t.CSIPluginConfig = &cfg
 	}
 
 	// If we have config, then parse that
@@ -192,6 +215,13 @@ func parseTask(item *ast.ObjectItem) (*api.Task, error) {
 		}
 
 		t.Resources = &r
+	}
+
+	// Parse restart policy
+	if o := listVal.Filter("restart"); len(o.Items) > 0 {
+		if err := parseRestartPolicy(&t.RestartPolicy, o); err != nil {
+			return nil, multierror.Prefix(err, "restart ->")
+		}
 	}
 
 	// If we have logs then parse that

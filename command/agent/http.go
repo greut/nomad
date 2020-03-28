@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/go-connlimit"
 	log "github.com/hashicorp/go-hclog"
+	"github.com/hashicorp/nomad/helper/noxssrw"
 	"github.com/hashicorp/nomad/helper/tlsutil"
 	"github.com/hashicorp/nomad/nomad/structs"
 	"github.com/rs/cors"
@@ -31,6 +32,13 @@ const (
 	// ErrEntOnly is the error returned if accessing an enterprise only
 	// endpoint
 	ErrEntOnly = "Nomad Enterprise only endpoint"
+
+	// ContextKeyReqID is a unique ID for a given request
+	ContextKeyReqID = "requestID"
+
+	// MissingRequestID is a placeholder if we cannot retrieve a request
+	// UUID from context
+	MissingRequestID = "<missing request id>"
 )
 
 var (
@@ -48,6 +56,9 @@ var (
 		AllowCredentials: true,
 	})
 )
+
+type handlerFn func(resp http.ResponseWriter, req *http.Request) (interface{}, error)
+type handlerByteFn func(resp http.ResponseWriter, req *http.Request) ([]byte, error)
 
 // HTTPServer is used to wrap an Agent and expose it over an HTTP interface
 type HTTPServer struct {
@@ -253,6 +264,11 @@ func (s *HTTPServer) registerHandlers(enableDebug bool) {
 	s.mux.HandleFunc("/v1/deployments", s.wrap(s.DeploymentsRequest))
 	s.mux.HandleFunc("/v1/deployment/", s.wrap(s.DeploymentSpecificRequest))
 
+	s.mux.HandleFunc("/v1/volumes", s.wrap(s.CSIVolumesRequest))
+	s.mux.HandleFunc("/v1/volume/csi/", s.wrap(s.CSIVolumeSpecificRequest))
+	s.mux.HandleFunc("/v1/plugins", s.wrap(s.CSIPluginsRequest))
+	s.mux.HandleFunc("/v1/plugin/csi/", s.wrap(s.CSIPluginSpecificRequest))
+
 	s.mux.HandleFunc("/v1/acl/policies", s.wrap(s.ACLPoliciesRequest))
 	s.mux.HandleFunc("/v1/acl/policy/", s.wrap(s.ACLPolicySpecificRequest))
 
@@ -273,6 +289,12 @@ func (s *HTTPServer) registerHandlers(enableDebug bool) {
 	s.mux.HandleFunc("/v1/agent/servers", s.wrap(s.AgentServersRequest))
 	s.mux.HandleFunc("/v1/agent/keyring/", s.wrap(s.KeyringOperationRequest))
 	s.mux.HandleFunc("/v1/agent/health", s.wrap(s.HealthRequest))
+
+	// Monitor is *not* an untrusted endpoint despite the log contents
+	// potentially containing unsanitized user input. Monitor, like
+	// "/v1/client/fs/logs", explicitly sets a "text/plain" or
+	// "application/json" Content-Type depending on the ?plain= query
+	// parameter.
 	s.mux.HandleFunc("/v1/agent/monitor", s.wrap(s.AgentMonitor))
 
 	s.mux.HandleFunc("/v1/agent/pprof/", s.wrapNonJSON(s.AgentPprofRequest))
@@ -282,6 +304,9 @@ func (s *HTTPServer) registerHandlers(enableDebug bool) {
 	s.mux.HandleFunc("/v1/validate/job", s.wrap(s.ValidateJobRequest))
 
 	s.mux.HandleFunc("/v1/regions", s.wrap(s.RegionListRequest))
+
+	s.mux.HandleFunc("/v1/scaling/policies", s.wrap(s.ScalingPoliciesRequest))
+	s.mux.HandleFunc("/v1/scaling/policy/", s.wrap(s.ScalingPolicySpecificRequest))
 
 	s.mux.HandleFunc("/v1/status/leader", s.wrap(s.StatusLeaderRequest))
 	s.mux.HandleFunc("/v1/status/peers", s.wrap(s.StatusPeersRequest))
@@ -298,14 +323,14 @@ func (s *HTTPServer) registerHandlers(enableDebug bool) {
 	s.mux.HandleFunc("/v1/operator/scheduler/configuration", s.wrap(s.OperatorSchedulerConfiguration))
 
 	if uiEnabled {
-		s.mux.Handle("/ui/", http.StripPrefix("/ui/", handleUI(http.FileServer(&UIAssetWrapper{FileSystem: assetFS()}))))
+		s.mux.Handle("/ui/", http.StripPrefix("/ui/", s.handleUI(http.FileServer(&UIAssetWrapper{FileSystem: assetFS()}))))
 	} else {
 		// Write the stubHTML
 		s.mux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(stubHTML))
 		})
 	}
-	s.mux.Handle("/", handleRootFallthrough())
+	s.mux.Handle("/", s.handleRootFallthrough())
 
 	if enableDebug {
 		if !s.agent.config.DevMode {
@@ -361,7 +386,7 @@ func (e *codedError) Code() int {
 	return e.code
 }
 
-func handleUI(h http.Handler) http.Handler {
+func (s *HTTPServer) handleUI(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		header := w.Header()
 		header.Add("Content-Security-Policy", "default-src 'none'; connect-src *; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; form-action 'none'; frame-ancestors 'none'")
@@ -370,14 +395,40 @@ func handleUI(h http.Handler) http.Handler {
 	})
 }
 
-func handleRootFallthrough() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+func (s *HTTPServer) handleRootFallthrough() http.Handler {
+	return s.auditHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/" {
 			http.Redirect(w, req, "/ui/", 307)
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
-	})
+	}))
+}
+
+func errCodeFromHandler(err error) (int, string) {
+	if err == nil {
+		return 0, ""
+	}
+
+	code := 500
+	errMsg := err.Error()
+	if http, ok := err.(HTTPCodedError); ok {
+		code = http.Code()
+	} else if ecode, emsg, ok := structs.CodeFromRPCCodedErr(err); ok {
+		code = ecode
+		errMsg = emsg
+	} else {
+		// RPC errors get wrapped, so manually unwrap by only looking at their suffix
+		if strings.HasSuffix(errMsg, structs.ErrPermissionDenied.Error()) {
+			errMsg = structs.ErrPermissionDenied.Error()
+			code = 403
+		} else if strings.HasSuffix(errMsg, structs.ErrTokenNotFound.Error()) {
+			errMsg = structs.ErrTokenNotFound.Error()
+			code = 403
+		}
+	}
+
+	return code, errMsg
 }
 
 // wrap is used to wrap functions to make them more convenient
@@ -390,7 +441,7 @@ func (s *HTTPServer) wrap(handler func(resp http.ResponseWriter, req *http.Reque
 		defer func() {
 			s.logger.Debug("request complete", "method", req.Method, "path", reqURL, "duration", time.Now().Sub(start))
 		}()
-		obj, err := handler(resp, req)
+		obj, err := s.auditHandler(handler)(resp, req)
 
 		// Check for an error
 	HAS_ERR:
@@ -462,28 +513,11 @@ func (s *HTTPServer) wrapNonJSON(handler func(resp http.ResponseWriter, req *htt
 		defer func() {
 			s.logger.Debug("request complete", "method", req.Method, "path", reqURL, "duration", time.Now().Sub(start))
 		}()
-		obj, err := handler(resp, req)
+		obj, err := s.auditNonJSONHandler(handler)(resp, req)
 
 		// Check for an error
 		if err != nil {
-			code := 500
-			errMsg := err.Error()
-			if http, ok := err.(HTTPCodedError); ok {
-				code = http.Code()
-			} else if ecode, emsg, ok := structs.CodeFromRPCCodedErr(err); ok {
-				code = ecode
-				errMsg = emsg
-			} else {
-				// RPC errors get wrapped, so manually unwrap by only looking at their suffix
-				if strings.HasSuffix(errMsg, structs.ErrPermissionDenied.Error()) {
-					errMsg = structs.ErrPermissionDenied.Error()
-					code = 403
-				} else if strings.HasSuffix(errMsg, structs.ErrTokenNotFound.Error()) {
-					errMsg = structs.ErrTokenNotFound.Error()
-					code = 403
-				}
-			}
-
+			code, errMsg := errCodeFromHandler(err)
 			resp.WriteHeader(code)
 			resp.Write([]byte(errMsg))
 			s.logger.Error("request failed", "method", req.Method, "path", reqURL, "error", err, "code", code)
@@ -621,6 +655,27 @@ func (s *HTTPServer) parseWriteRequest(req *http.Request, w *structs.WriteReques
 	parseNamespace(req, &w.Namespace)
 	s.parseToken(req, &w.AuthToken)
 	s.parseRegion(req, &w.Region)
+}
+
+// wrapUntrustedContent wraps handlers in a http.ResponseWriter that prevents
+// setting Content-Types that a browser may render (eg text/html). Any API that
+// returns service-generated content (eg /v1/client/fs/cat) must be wrapped.
+func (s *HTTPServer) wrapUntrustedContent(handler handlerFn) handlerFn {
+	return func(resp http.ResponseWriter, req *http.Request) (interface{}, error) {
+		resp, closeWriter := noxssrw.NewResponseWriter(resp)
+		defer func() {
+			if _, err := closeWriter(); err != nil {
+				// Can't write an error response at this point so just
+				// log. s.wrap does not even log when resp.Write fails,
+				// so log at low level.
+				s.logger.Debug("error writing HTTP response", "error", err,
+					"method", req.Method, "path", req.URL.String())
+			}
+		}()
+
+		// Call the wrapped handler
+		return handler(resp, req)
+	}
 }
 
 // wrapCORS wraps a HandlerFunc in allowCORS and returns a http.Handler

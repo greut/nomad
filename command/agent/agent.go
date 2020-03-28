@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -22,6 +23,7 @@ import (
 	clientconfig "github.com/hashicorp/nomad/client/config"
 	"github.com/hashicorp/nomad/client/state"
 	"github.com/hashicorp/nomad/command/agent/consul"
+	"github.com/hashicorp/nomad/command/agent/event"
 	"github.com/hashicorp/nomad/helper/pluginutils/loader"
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/nomad"
@@ -53,6 +55,7 @@ type Agent struct {
 	configLock sync.Mutex
 
 	logger     log.InterceptLogger
+	auditor    event.Auditor
 	httpLogger log.Logger
 	logOutput  io.Writer
 
@@ -116,6 +119,9 @@ func NewAgent(config *Config, logger log.InterceptLogger, logOutput io.Writer, i
 		return nil, err
 	}
 	if err := a.setupClient(); err != nil {
+		return nil, err
+	}
+	if err := a.setupEnterpriseAgent(logger); err != nil {
 		return nil, err
 	}
 	if a.client == nil && a.server == nil {
@@ -998,6 +1004,19 @@ func (a *Agent) Reload(newConfig *Config) error {
 		a.logger.SetLevel(log.LevelFromString(newConfig.LogLevel))
 	}
 
+	// Update eventer config
+	if newConfig.Audit != nil {
+		if err := a.entReloadEventer(newConfig.Audit); err != nil {
+			return err
+		}
+	}
+	// Allow auditor to call reopen regardless of config changes
+	// This is primarily for enterprise audit logging to allow the underlying
+	// file to be reopened if necessary
+	if err := a.auditor.Reopen(); err != nil {
+		return err
+	}
+
 	fullUpdateTLSConfig := func() {
 		// Completely reload the agent's TLS configuration (moving from non-TLS to
 		// TLS, or vice versa)
@@ -1069,3 +1088,26 @@ func (a *Agent) setupConsul(consulConfig *config.ConsulConfig) error {
 	go a.consulService.Run()
 	return nil
 }
+
+// noOpAuditor is a no-op Auditor that fulfills the
+// event.Auditor interface.
+type noOpAuditor struct{}
+
+// Ensure noOpAuditor is an Auditor
+var _ event.Auditor = &noOpAuditor{}
+
+func (e *noOpAuditor) Event(ctx context.Context, eventType string, payload interface{}) error {
+	return nil
+}
+
+func (e *noOpAuditor) Enabled() bool {
+	return false
+}
+
+func (e *noOpAuditor) Reopen() error {
+	return nil
+}
+
+func (e *noOpAuditor) SetEnabled(enabled bool) {}
+
+func (e *noOpAuditor) DeliveryEnforced() bool { return false }

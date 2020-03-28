@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/golang/snappy"
+
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/jobspec"
@@ -81,6 +82,9 @@ func (s *HTTPServer) JobSpecificRequest(resp http.ResponseWriter, req *http.Requ
 	case strings.HasSuffix(path, "/stable"):
 		jobName := strings.TrimSuffix(path, "/stable")
 		return s.jobStable(resp, req, jobName)
+	case strings.HasSuffix(path, "/scale"):
+		jobName := strings.TrimSuffix(path, "/scale")
+		return s.jobScale(resp, req, jobName)
 	default:
 		return s.jobCRUD(resp, req, path)
 	}
@@ -453,6 +457,82 @@ func (s *HTTPServer) jobDelete(resp http.ResponseWriter, req *http.Request,
 	return out, nil
 }
 
+func (s *HTTPServer) jobScale(resp http.ResponseWriter, req *http.Request,
+	jobName string) (interface{}, error) {
+
+	switch req.Method {
+	case "GET":
+		return s.jobScaleStatus(resp, req, jobName)
+	case "PUT", "POST":
+		return s.jobScaleAction(resp, req, jobName)
+	default:
+		return nil, CodedError(405, ErrInvalidMethod)
+	}
+}
+
+func (s *HTTPServer) jobScaleStatus(resp http.ResponseWriter, req *http.Request,
+	jobName string) (interface{}, error) {
+
+	args := structs.JobScaleStatusRequest{
+		JobID: jobName,
+	}
+	if s.parse(resp, req, &args.Region, &args.QueryOptions) {
+		return nil, nil
+	}
+
+	var out structs.JobScaleStatusResponse
+	if err := s.agent.RPC("Job.ScaleStatus", &args, &out); err != nil {
+		return nil, err
+	}
+
+	setMeta(resp, &out.QueryMeta)
+	if out.JobScaleStatus == nil {
+		return nil, CodedError(404, "job not found")
+	}
+
+	return out.JobScaleStatus, nil
+}
+
+func (s *HTTPServer) jobScaleAction(resp http.ResponseWriter, req *http.Request,
+	jobName string) (interface{}, error) {
+
+	if req.Method != "PUT" && req.Method != "POST" {
+		return nil, CodedError(405, ErrInvalidMethod)
+	}
+
+	var args api.ScalingRequest
+	if err := decodeBody(req, &args); err != nil {
+		return nil, CodedError(400, err.Error())
+	}
+
+	namespace := args.Target[structs.ScalingTargetNamespace]
+	targetJob := args.Target[structs.ScalingTargetJob]
+	if targetJob != "" && targetJob != jobName {
+		return nil, CodedError(400, "job ID in payload did not match URL")
+	}
+
+	scaleReq := structs.JobScaleRequest{
+		JobID:          jobName,
+		Namespace:      namespace,
+		Target:         args.Target,
+		Count:          args.Count,
+		PolicyOverride: args.PolicyOverride,
+		Reason:         args.Reason,
+		Error:          args.Error,
+		Meta:           args.Meta,
+	}
+	// parseWriteRequest overrides Namespace, Region and AuthToken
+	// based on values from the original http request
+	s.parseWriteRequest(req, &scaleReq.WriteRequest)
+
+	var out structs.JobRegisterResponse
+	if err := s.agent.RPC("Job.Scale", &scaleReq, &out); err != nil {
+		return nil, err
+	}
+	setIndex(resp, out.Index)
+	return out, nil
+}
+
 func (s *HTTPServer) jobVersions(resp http.ResponseWriter, req *http.Request,
 	jobName string) (interface{}, error) {
 
@@ -685,7 +765,7 @@ func ApiJobToStructJob(job *api.Job) *structs.Job {
 		j.TaskGroups = make([]*structs.TaskGroup, l)
 		for i, taskGroup := range job.TaskGroups {
 			tg := &structs.TaskGroup{}
-			ApiTgToStructsTG(taskGroup, tg)
+			ApiTgToStructsTG(j, taskGroup, tg)
 			j.TaskGroups[i] = tg
 		}
 	}
@@ -693,7 +773,7 @@ func ApiJobToStructJob(job *api.Job) *structs.Job {
 	return j
 }
 
-func ApiTgToStructsTG(taskGroup *api.TaskGroup, tg *structs.TaskGroup) {
+func ApiTgToStructsTG(job *structs.Job, taskGroup *api.TaskGroup, tg *structs.TaskGroup) {
 	tg.Name = *taskGroup.Name
 	tg.Count = *taskGroup.Count
 	tg.Meta = taskGroup.Meta
@@ -733,6 +813,10 @@ func ApiTgToStructsTG(taskGroup *api.TaskGroup, tg *structs.TaskGroup) {
 		}
 	}
 
+	if taskGroup.Scaling != nil {
+		tg.Scaling = ApiScalingPolicyToStructs(tg.Count, taskGroup.Scaling).TargetTaskGroup(job, tg)
+	}
+
 	tg.EphemeralDisk = &structs.EphemeralDisk{
 		Sticky:  *taskGroup.EphemeralDisk.Sticky,
 		SizeMB:  *taskGroup.EphemeralDisk.SizeMB,
@@ -749,8 +833,9 @@ func ApiTgToStructsTG(taskGroup *api.TaskGroup, tg *structs.TaskGroup) {
 	if l := len(taskGroup.Volumes); l != 0 {
 		tg.Volumes = make(map[string]*structs.VolumeRequest, l)
 		for k, v := range taskGroup.Volumes {
-			if v.Type != structs.VolumeTypeHost {
-				// Ignore non-host volumes in this iteration currently.
+			if v.Type != structs.VolumeTypeHost && v.Type != structs.VolumeTypeCSI {
+				// Ignore volumes we don't understand in this iteration currently.
+				// - This is because we don't currently have a way to return errors here.
 				continue
 			}
 
@@ -759,6 +844,13 @@ func ApiTgToStructsTG(taskGroup *api.TaskGroup, tg *structs.TaskGroup) {
 				Type:     v.Type,
 				ReadOnly: v.ReadOnly,
 				Source:   v.Source,
+			}
+
+			if v.MountOptions != nil {
+				vol.MountOptions = &structs.CSIMountOptions{
+					FSType:     v.MountOptions.FSType,
+					MountFlags: v.MountOptions.MountFlags,
+				}
 			}
 
 			tg.Volumes[k] = vol
@@ -812,6 +904,16 @@ func ApiTaskToStructsTask(apiTask *api.Task, structsTask *structs.Task) {
 	structsTask.Kind = structs.TaskKind(apiTask.Kind)
 	structsTask.Constraints = ApiConstraintsToStructs(apiTask.Constraints)
 	structsTask.Affinities = ApiAffinitiesToStructs(apiTask.Affinities)
+	structsTask.CSIPluginConfig = ApiCSIPluginConfigToStructsCSIPluginConfig(apiTask.CSIPluginConfig)
+
+	if apiTask.RestartPolicy != nil {
+		structsTask.RestartPolicy = &structs.RestartPolicy{
+			Attempts: *apiTask.RestartPolicy.Attempts,
+			Interval: *apiTask.RestartPolicy.Interval,
+			Delay:    *apiTask.RestartPolicy.Delay,
+			Mode:     *apiTask.RestartPolicy.Mode,
+		}
+	}
 
 	if l := len(apiTask.VolumeMounts); l != 0 {
 		structsTask.VolumeMounts = make([]*structs.VolumeMount, l)
@@ -931,6 +1033,18 @@ func ApiTaskToStructsTask(apiTask *api.Task, structsTask *structs.Task) {
 			Sidecar: apiTask.Lifecycle.Sidecar,
 		}
 	}
+}
+
+func ApiCSIPluginConfigToStructsCSIPluginConfig(apiConfig *api.TaskCSIPluginConfig) *structs.TaskCSIPluginConfig {
+	if apiConfig == nil {
+		return nil
+	}
+
+	sc := &structs.TaskCSIPluginConfig{}
+	sc.ID = apiConfig.ID
+	sc.Type = structs.CSIPluginType(apiConfig.Type)
+	sc.MountDir = apiConfig.MountDir
+	return sc
 }
 
 func ApiResourcesToStructs(in *api.Resources) *structs.Resources {

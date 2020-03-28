@@ -25,8 +25,12 @@ import (
 
 	"github.com/gorhill/cronexpr"
 	hcodec "github.com/hashicorp/go-msgpack/codec"
-	multierror "github.com/hashicorp/go-multierror"
-	version "github.com/hashicorp/go-version"
+	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/go-version"
+	"github.com/mitchellh/copystructure"
+	"github.com/ugorji/go/codec"
+	"golang.org/x/crypto/blake2b"
+
 	"github.com/hashicorp/nomad/acl"
 	"github.com/hashicorp/nomad/command/agent/pprof"
 	"github.com/hashicorp/nomad/helper"
@@ -35,9 +39,6 @@ import (
 	"github.com/hashicorp/nomad/helper/uuid"
 	"github.com/hashicorp/nomad/lib/kheap"
 	psstructs "github.com/hashicorp/nomad/plugins/shared/structs"
-	"github.com/mitchellh/copystructure"
-	"github.com/ugorji/go/codec"
-	"golang.org/x/crypto/blake2b"
 )
 
 var (
@@ -86,6 +87,9 @@ const (
 	ClusterMetadataRequestType
 	ServiceIdentityAccessorRegisterRequestType
 	ServiceIdentityAccessorDeregisterRequestType
+	CSIVolumeRegisterRequestType
+	CSIVolumeDeregisterRequestType
+	CSIVolumeClaimRequestType
 )
 
 const (
@@ -160,6 +164,8 @@ const (
 	Namespaces  Context = "namespaces"
 	Quotas      Context = "quotas"
 	All         Context = "all"
+	Plugins     Context = "plugins"
+	Volumes     Context = "volumes"
 )
 
 // NamespacedID is a tuple of an ID and a namespace
@@ -612,8 +618,29 @@ type JobPlanRequest struct {
 	WriteRequest
 }
 
+// JobScaleRequest is used for the Job.Scale endpoint to scale one of the
+// scaling targets in a job
+type JobScaleRequest struct {
+	Namespace string
+	JobID     string
+	Target    map[string]string
+	Count     *int64
+	Reason    *string
+	Error     *string
+	Meta      map[string]interface{}
+	// PolicyOverride is set when the user is attempting to override any policies
+	PolicyOverride bool
+	WriteRequest
+}
+
 // JobSummaryRequest is used when we just need to get a specific job summary
 type JobSummaryRequest struct {
+	JobID string
+	QueryOptions
+}
+
+// JobScaleStatusRequest is used to get the scale status for a job
+type JobScaleStatusRequest struct {
 	JobID string
 	QueryOptions
 }
@@ -1040,6 +1067,29 @@ type DeploymentFailRequest struct {
 	WriteRequest
 }
 
+// ScalingPolicySpecificRequest is used when we just need to specify a target scaling policy
+type ScalingPolicySpecificRequest struct {
+	ID string
+	QueryOptions
+}
+
+// SingleScalingPolicyResponse is used to return a single job
+type SingleScalingPolicyResponse struct {
+	Policy *ScalingPolicy
+	QueryMeta
+}
+
+// ScalingPolicyListRequest is used to parameterize a scaling policy list request
+type ScalingPolicyListRequest struct {
+	QueryOptions
+}
+
+// ScalingPolicyListResponse is used for a list request
+type ScalingPolicyListResponse struct {
+	Policies []*ScalingPolicyListStub
+	QueryMeta
+}
+
 // SingleDeploymentResponse is used to respond with a single deployment
 type SingleDeploymentResponse struct {
 	Deployment *Deployment
@@ -1182,6 +1232,39 @@ type SingleJobResponse struct {
 type JobSummaryResponse struct {
 	JobSummary *JobSummary
 	QueryMeta
+}
+
+// JobScaleStatusResponse is used to return the scale status for a job
+type JobScaleStatusResponse struct {
+	JobScaleStatus *JobScaleStatus
+	QueryMeta
+}
+
+type JobScaleStatus struct {
+	JobID          string
+	JobCreateIndex uint64
+	JobModifyIndex uint64
+	JobStopped     bool
+	TaskGroups     map[string]*TaskGroupScaleStatus
+}
+
+// TaskGroupScaleStatus is used to return the scale status for a given task group
+type TaskGroupScaleStatus struct {
+	Desired   int
+	Placed    int
+	Running   int
+	Healthy   int
+	Unhealthy int
+	Events    []ScalingEvent
+}
+
+// ScalingEvent represents a specific scaling event
+type ScalingEvent struct {
+	Reason *string
+	Error  *string
+	Meta   map[string]interface{}
+	Time   uint64
+	EvalID *string
 }
 
 type JobDispatchResponse struct {
@@ -1659,6 +1742,11 @@ type Node struct {
 	// Drivers is a map of driver names to current driver information
 	Drivers map[string]*DriverInfo
 
+	// CSIControllerPlugins is a map of plugin names to current CSI Plugin info
+	CSIControllerPlugins map[string]*CSIInfo
+	// CSINodePlugins is a map of plugin names to current CSI Plugin info
+	CSINodePlugins map[string]*CSIInfo
+
 	// HostVolumes is a map of host volume names to their configuration
 	HostVolumes map[string]*ClientHostVolumeConfig
 
@@ -1705,6 +1793,8 @@ func (n *Node) Copy() *Node {
 	nn.Meta = helper.CopyMapStringString(nn.Meta)
 	nn.Events = copyNodeEvents(n.Events)
 	nn.DrainStrategy = nn.DrainStrategy.Copy()
+	nn.CSIControllerPlugins = copyNodeCSI(nn.CSIControllerPlugins)
+	nn.CSINodePlugins = copyNodeCSI(nn.CSINodePlugins)
 	nn.Drivers = copyNodeDrivers(n.Drivers)
 	nn.HostVolumes = copyNodeHostVolumes(n.HostVolumes)
 	return nn
@@ -1721,6 +1811,21 @@ func copyNodeEvents(events []*NodeEvent) []*NodeEvent {
 	for i, event := range events {
 		c[i] = event.Copy()
 	}
+	return c
+}
+
+// copyNodeCSI is a helper to copy a map of CSIInfo
+func copyNodeCSI(plugins map[string]*CSIInfo) map[string]*CSIInfo {
+	l := len(plugins)
+	if l == 0 {
+		return nil
+	}
+
+	c := make(map[string]*CSIInfo, l)
+	for plugin, info := range plugins {
+		c[plugin] = info.Copy()
+	}
+
 	return c
 }
 
@@ -3976,6 +4081,8 @@ func (j *Job) SpecChanged(new *Job) bool {
 	c.JobModifyIndex = j.JobModifyIndex
 	c.SubmitTime = j.SubmitTime
 
+	// cgbaker: FINISH: probably need some consideration of scaling policy ID here
+
 	// Deep equals the jobs
 	return !reflect.DeepEqual(j, c)
 }
@@ -4549,6 +4656,91 @@ const (
 	ReasonWithinPolicy = "Restart within policy"
 )
 
+// ScalingPolicy specifies the scaling policy for a scaling target
+type ScalingPolicy struct {
+	// ID is a generated UUID used for looking up the scaling policy
+	ID string
+
+	// Target contains information about the target of the scaling policy, like job and group
+	Target map[string]string
+
+	// Policy is an opaque description of the scaling policy, passed to the autoscaler
+	Policy map[string]interface{}
+
+	// Min is the minimum allowable scaling count for this target
+	Min int64
+
+	// Max is the maximum allowable scaling count for this target
+	Max int64
+
+	// Enabled indicates whether this policy has been enabled/disabled
+	Enabled bool
+
+	CreateIndex uint64
+	ModifyIndex uint64
+}
+
+const (
+	ScalingTargetNamespace = "Namespace"
+	ScalingTargetJob       = "Job"
+	ScalingTargetGroup     = "Group"
+)
+
+// Diff indicates whether the specification for a given scaling policy has changed
+func (p *ScalingPolicy) Diff(p2 *ScalingPolicy) bool {
+	copy := *p2
+	copy.ID = p.ID
+	copy.CreateIndex = p.CreateIndex
+	copy.ModifyIndex = p.ModifyIndex
+	return !reflect.DeepEqual(*p, copy)
+}
+
+func (p *ScalingPolicy) TargetTaskGroup(job *Job, tg *TaskGroup) *ScalingPolicy {
+	p.Target = map[string]string{
+		ScalingTargetNamespace: job.Namespace,
+		ScalingTargetJob:       job.ID,
+		ScalingTargetGroup:     tg.Name,
+	}
+	return p
+}
+
+func (p *ScalingPolicy) Stub() *ScalingPolicyListStub {
+	stub := &ScalingPolicyListStub{
+		ID:          p.ID,
+		Target:      make(map[string]string),
+		Enabled:     p.Enabled,
+		CreateIndex: p.CreateIndex,
+		ModifyIndex: p.ModifyIndex,
+	}
+	for k, v := range p.Target {
+		stub.Target[k] = v
+	}
+	return stub
+}
+
+// GetScalingPolicies returns a slice of all scaling scaling policies for this job
+func (j *Job) GetScalingPolicies() []*ScalingPolicy {
+	ret := make([]*ScalingPolicy, 0)
+
+	for _, tg := range j.TaskGroups {
+		if tg.Scaling != nil {
+			ret = append(ret, tg.Scaling)
+		}
+	}
+
+	return ret
+}
+
+// ScalingPolicyListStub is used to return a subset of scaling policy information
+// for the scaling policy list
+type ScalingPolicyListStub struct {
+	ID          string
+	Enabled     bool
+	Target      map[string]string
+	CreateIndex uint64
+	ModifyIndex uint64
+}
+
 // RestartPolicy configures how Tasks are restarted when they crash or fail.
 type RestartPolicy struct {
 	// Attempts is the number of restart that will occur in an interval.
@@ -4900,7 +5092,10 @@ type TaskGroup struct {
 	// all the tasks contained.
 	Constraints []*Constraint
 
-	//RestartPolicy of a TaskGroup
+	// Scaling is the list of autoscaling policies for the TaskGroup
+	Scaling *ScalingPolicy
+
+	// RestartPolicy of a TaskGroup
 	RestartPolicy *RestartPolicy
 
 	// Tasks are the collection of tasks that this task group needs to run
@@ -4953,6 +5148,7 @@ func (tg *TaskGroup) Copy() *TaskGroup {
 	ntg.Affinities = CopySliceAffinities(ntg.Affinities)
 	ntg.Spreads = CopySliceSpreads(ntg.Spreads)
 	ntg.Volumes = CopyMapVolumeRequest(ntg.Volumes)
+	ntg.Scaling = CopyScalingPolicy(ntg.Scaling)
 
 	// Copy the network objects
 	if tg.Networks != nil {
@@ -5154,8 +5350,8 @@ func (tg *TaskGroup) Validate(j *Job) error {
 
 	// Validate the Host Volumes
 	for name, decl := range tg.Volumes {
-		if decl.Type != VolumeTypeHost {
-			// TODO: Remove this error when adding new volume types
+		if !(decl.Type == VolumeTypeHost ||
+			decl.Type == VolumeTypeCSI) {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Volume %s has unrecognised type %s", name, decl.Type))
 			continue
 		}
@@ -5174,6 +5370,12 @@ func (tg *TaskGroup) Validate(j *Job) error {
 	// Validate task group and task services
 	if err := tg.validateServices(); err != nil {
 		outer := fmt.Errorf("Task group service validation failed: %v", err)
+		mErr.Errors = append(mErr.Errors, outer)
+	}
+
+	// Validate the scaling policy
+	if err := tg.validateScalingPolicy(); err != nil {
+		outer := fmt.Errorf("Task group scaling policy validation failed: %v", err)
 		mErr.Errors = append(mErr.Errors, outer)
 	}
 
@@ -5325,6 +5527,33 @@ func (tg *TaskGroup) validateServices() error {
 			}
 		}
 	}
+	return mErr.ErrorOrNil()
+}
+
+// validateScalingPolicy ensures that the scaling policy has consistent
+// min and max, not in conflict with the task group count
+func (tg *TaskGroup) validateScalingPolicy() error {
+	if tg.Scaling == nil {
+		return nil
+	}
+
+	var mErr multierror.Error
+
+	if tg.Scaling.Min > tg.Scaling.Max {
+		mErr.Errors = append(mErr.Errors,
+			fmt.Errorf("Scaling policy invalid: maximum count must not be less than minimum count"))
+	}
+
+	if int64(tg.Count) < tg.Scaling.Min {
+		mErr.Errors = append(mErr.Errors,
+			fmt.Errorf("Scaling policy invalid: task group count must not be less than minimum count in scaling policy"))
+	}
+
+	if tg.Scaling.Max < int64(tg.Count) {
+		mErr.Errors = append(mErr.Errors,
+			fmt.Errorf("Scaling policy invalid: task group count must not be greater than maximum count in scaling policy"))
+	}
+
 	return mErr.ErrorOrNil()
 }
 
@@ -5515,6 +5744,9 @@ type Task struct {
 	// Resources is the resources needed by this task
 	Resources *Resources
 
+	// RestartPolicy of a TaskGroup
+	RestartPolicy *RestartPolicy
+
 	// DispatchPayload configures how the task retrieves its input from a dispatch
 	DispatchPayload *DispatchPayloadConfig
 
@@ -5556,6 +5788,9 @@ type Task struct {
 	// Used internally to manage tasks according to their TaskKind. Initial use case
 	// is for Consul Connect
 	Kind TaskKind
+
+	// CSIPluginConfig is used to configure the plugin supervisor for the task.
+	CSIPluginConfig *TaskCSIPluginConfig
 }
 
 // UsesConnect is for conveniently detecting if the Task is able to make use
@@ -5593,6 +5828,7 @@ func (t *Task) Copy() *Task {
 	nt.Constraints = CopySliceConstraints(nt.Constraints)
 	nt.Affinities = CopySliceAffinities(nt.Affinities)
 	nt.VolumeMounts = CopySliceVolumeMount(nt.VolumeMounts)
+	nt.CSIPluginConfig = nt.CSIPluginConfig.Copy()
 
 	nt.Vault = nt.Vault.Copy()
 	nt.Resources = nt.Resources.Copy()
@@ -5649,6 +5885,10 @@ func (t *Task) Canonicalize(job *Job, tg *TaskGroup) {
 		t.Resources = DefaultResources()
 	} else {
 		t.Resources.Canonicalize()
+	}
+
+	if t.RestartPolicy == nil {
+		t.RestartPolicy = tg.RestartPolicy
 	}
 
 	// Set the default timeout if it is not specified.
@@ -5809,6 +6049,19 @@ func (t *Task) Validate(ephemeralDisk *EphemeralDisk, jobType string, tgServices
 		if !MountPropagationModeIsValid(vm.PropagationMode) {
 			mErr.Errors = append(mErr.Errors, fmt.Errorf("Volume Mount (%d) has an invalid propagation mode: \"%s\"", idx, vm.PropagationMode))
 		}
+	}
+
+	// Validate CSI Plugin Config
+	if t.CSIPluginConfig != nil {
+		if t.CSIPluginConfig.ID == "" {
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("CSIPluginConfig must have a non-empty PluginID"))
+		}
+
+		if !CSIPluginTypeIsValid(t.CSIPluginConfig.Type) {
+			mErr.Errors = append(mErr.Errors, fmt.Errorf("CSIPluginConfig PluginType must be one of 'node', 'controller', or 'monolith', got: \"%s\"", t.CSIPluginConfig.Type))
+		}
+
+		// TODO: Investigate validation of the PluginMountDir. Not much we can do apart from check IsAbs until after we understand its execution environment though :(
 	}
 
 	return mErr.ErrorOrNil()
@@ -6336,6 +6589,12 @@ const (
 	// TaskRestoreFailed indicates Nomad was unable to reattach to a
 	// restored task.
 	TaskRestoreFailed = "Failed Restoring Task"
+
+	// TaskPluginUnhealthy indicates that a plugin managed by Nomad became unhealthy
+	TaskPluginUnhealthy = "Plugin became unhealthy"
+
+	// TaskPluginHealthy indicates that a plugin managed by Nomad became healthy
+	TaskPluginHealthy = "Plugin became healthy"
 )
 
 // TaskEvent is an event that effects the state of a task and contains meta-data
@@ -8621,6 +8880,7 @@ const (
 	EvalTriggerRetryFailedAlloc  = "alloc-failure"
 	EvalTriggerQueuedAllocs      = "queued-allocs"
 	EvalTriggerPreemption        = "preemption"
+	EvalTriggerScaling           = "job-scaling"
 )
 
 const (
@@ -8645,6 +8905,11 @@ const (
 	// deployments. We periodically scan garbage collectible deployments and
 	// check if they are terminal. If so, we delete these out of the system.
 	CoreJobDeploymentGC = "deployment-gc"
+
+	// CoreJobCSIVolumeClaimGC is use for the garbage collection of CSI
+	// volume claims. We periodically scan volumes to see if no allocs are
+	// claiming them. If so, we unclaim the volume.
+	CoreJobCSIVolumeClaimGC = "csi-volume-claim-gc"
 
 	// CoreJobForceGC is used to force garbage collection of all GCable objects.
 	CoreJobForceGC = "force-gc"

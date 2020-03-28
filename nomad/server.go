@@ -249,6 +249,8 @@ type endpoints struct {
 	Eval       *Eval
 	Plan       *Plan
 	Alloc      *Alloc
+	CSIVolume  *CSIVolume
+	CSIPlugin  *CSIPlugin
 	Deployment *Deployment
 	Region     *Region
 	Search     *Search
@@ -256,13 +258,15 @@ type endpoints struct {
 	System     *System
 	Operator   *Operator
 	ACL        *ACL
+	Scaling    *Scaling
 	Enterprise *EnterpriseEndpoints
 
 	// Client endpoints
-	ClientStats       *ClientStats
-	FileSystem        *FileSystem
-	Agent             *Agent
-	ClientAllocations *ClientAllocations
+	ClientStats         *ClientStats
+	FileSystem          *FileSystem
+	Agent               *Agent
+	ClientAllocations   *ClientAllocations
+	ClientCSIController *ClientCSIController
 }
 
 // NewServer is used to construct a new Nomad server from the
@@ -1092,11 +1096,14 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 		s.staticEndpoints.Eval = &Eval{srv: s, logger: s.logger.Named("eval")}
 		s.staticEndpoints.Job = NewJobEndpoints(s)
 		s.staticEndpoints.Node = &Node{srv: s, logger: s.logger.Named("client")} // Add but don't register
+		s.staticEndpoints.CSIVolume = &CSIVolume{srv: s, logger: s.logger.Named("csi_volume")}
+		s.staticEndpoints.CSIPlugin = &CSIPlugin{srv: s, logger: s.logger.Named("csi_plugin")}
 		s.staticEndpoints.Deployment = &Deployment{srv: s, logger: s.logger.Named("deployment")}
 		s.staticEndpoints.Operator = &Operator{srv: s, logger: s.logger.Named("operator")}
 		s.staticEndpoints.Periodic = &Periodic{srv: s, logger: s.logger.Named("periodic")}
 		s.staticEndpoints.Plan = &Plan{srv: s, logger: s.logger.Named("plan")}
 		s.staticEndpoints.Region = &Region{srv: s, logger: s.logger.Named("region")}
+		s.staticEndpoints.Scaling = &Scaling{srv: s, logger: s.logger.Named("scaling")}
 		s.staticEndpoints.Status = &Status{srv: s, logger: s.logger.Named("status")}
 		s.staticEndpoints.System = &System{srv: s, logger: s.logger.Named("system")}
 		s.staticEndpoints.Search = &Search{srv: s, logger: s.logger.Named("search")}
@@ -1106,6 +1113,7 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 		s.staticEndpoints.ClientStats = &ClientStats{srv: s, logger: s.logger.Named("client_stats")}
 		s.staticEndpoints.ClientAllocations = &ClientAllocations{srv: s, logger: s.logger.Named("client_allocs")}
 		s.staticEndpoints.ClientAllocations.register()
+		s.staticEndpoints.ClientCSIController = &ClientCSIController{srv: s, logger: s.logger.Named("client_csi")}
 
 		// Streaming endpoints
 		s.staticEndpoints.FileSystem = &FileSystem{srv: s, logger: s.logger.Named("client_fs")}
@@ -1120,17 +1128,21 @@ func (s *Server) setupRpcServer(server *rpc.Server, ctx *RPCContext) {
 	server.Register(s.staticEndpoints.Alloc)
 	server.Register(s.staticEndpoints.Eval)
 	server.Register(s.staticEndpoints.Job)
+	server.Register(s.staticEndpoints.CSIVolume)
+	server.Register(s.staticEndpoints.CSIPlugin)
 	server.Register(s.staticEndpoints.Deployment)
 	server.Register(s.staticEndpoints.Operator)
 	server.Register(s.staticEndpoints.Periodic)
 	server.Register(s.staticEndpoints.Plan)
 	server.Register(s.staticEndpoints.Region)
+	server.Register(s.staticEndpoints.Scaling)
 	server.Register(s.staticEndpoints.Status)
 	server.Register(s.staticEndpoints.System)
 	server.Register(s.staticEndpoints.Search)
 	s.staticEndpoints.Enterprise.Register(server)
 	server.Register(s.staticEndpoints.ClientStats)
 	server.Register(s.staticEndpoints.ClientAllocations)
+	server.Register(s.staticEndpoints.ClientCSIController)
 	server.Register(s.staticEndpoints.FileSystem)
 	server.Register(s.staticEndpoints.Agent)
 

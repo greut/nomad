@@ -7,6 +7,28 @@
 
 export default [
   {
+    category: 'install',
+    content: [
+      { category: 'quickstart' },
+      {
+        category: 'production',
+        content: [
+          'requirements',
+          'nomad-agent',
+          'reference-architecture',
+          'deployment-guide'
+        ]
+      },
+      'windows-service'
+    ]
+  },
+  { category: 'upgrade', content: ['upgrade-specific'] },
+  {
+    category: 'integrations',
+    content: ['consul-integration', 'consul-connect', 'vault-integration']
+  },
+  '-----------',
+  {
     category: 'internals',
     content: [
       'architecture',
@@ -23,6 +45,7 @@ export default [
     category: 'configuration',
     content: [
       'acl',
+      'audit',
       'autopilot',
       'client',
       'consul',
@@ -105,6 +128,7 @@ export default [
           'raft-remove-peer'
         ]
       },
+      { category: 'plugin', content: ['status'] },
       {
         category: 'quota',
         content: ['apply', 'delete', 'init', 'inspect', 'list', 'status']
@@ -114,7 +138,8 @@ export default [
       'status',
       { category: 'system', content: ['gc', 'reconcile-summaries'] },
       'ui',
-      'version'
+      'version',
+      { category: 'volume', content: ['register', 'deregister', 'status'] }
     ]
   },
   '----------',
@@ -126,12 +151,14 @@ export default [
       'check_restart',
       'connect',
       'constraint',
+      'csi_plugin',
       'device',
       'dispatch_payload',
       'env',
       'ephemeral_disk',
       'group',
       'job',
+      'lifecycle',
       'logs',
       'meta',
       'migrate',
@@ -142,6 +169,7 @@ export default [
       'reschedule',
       'resources',
       'restart',
+      'scaling',
       'service',
       'sidecar_service',
       'sidecar_task',
