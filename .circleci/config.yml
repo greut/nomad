@@ -824,13 +824,6 @@ workflows:
             - /^.-ui\b.*/
             - /^docs-.*/
             - stable-website
-    - build-darwin-binaries:
-        filters:
-          branches:
-            ignore:
-            - /^.-ui\b.*/
-            - /^docs-.*/
-            - stable-website
     - test-client:
         filters:
           branches:
