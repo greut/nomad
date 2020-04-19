@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/nomad/helper"
 	"github.com/stretchr/testify/require"
 )
 
@@ -2454,6 +2455,7 @@ func TestTaskGroupDiff(t *testing.T) {
 								Args:     []string{"foo"},
 								Path:     "foo",
 								Protocol: "http",
+								Expose:   true,
 								Interval: 1 * time.Second,
 								Timeout:  1 * time.Second,
 							},
@@ -2486,6 +2488,7 @@ func TestTaskGroupDiff(t *testing.T) {
 								Command:  "bar",
 								Path:     "bar",
 								Protocol: "tcp",
+								Expose:   false,
 								Interval: 2 * time.Second,
 								Timeout:  2 * time.Second,
 								Header: map[string][]string{
@@ -2548,7 +2551,6 @@ func TestTaskGroupDiff(t *testing.T) {
 							},
 						},
 						Objects: []*ObjectDiff{
-
 							{
 								Type: DiffTypeEdited,
 								Name: "Check",
@@ -2564,6 +2566,12 @@ func TestTaskGroupDiff(t *testing.T) {
 										Name: "Command",
 										Old:  "foo",
 										New:  "bar",
+									},
+									{
+										Type: DiffTypeEdited,
+										Name: "Expose",
+										Old:  "true",
+										New:  "false",
 									},
 									{
 										Type: DiffTypeNone,
@@ -2619,6 +2627,7 @@ func TestTaskGroupDiff(t *testing.T) {
 										Old:  "http",
 										New:  "tcp",
 									},
+
 									{
 										Type: DiffTypeNone,
 										Name: "TLSSkipVerify",
@@ -3017,6 +3026,62 @@ func TestTaskGroupDiff(t *testing.T) {
 								New:  "",
 							},
 						},
+					},
+				},
+			},
+		},
+		{
+			TestCase: "TaskGroup shutdown_delay edited",
+			Old: &TaskGroup{
+				ShutdownDelay: helper.TimeToPtr(30 * time.Second),
+			},
+			New: &TaskGroup{
+				ShutdownDelay: helper.TimeToPtr(5 * time.Second),
+			},
+			Expected: &TaskGroupDiff{
+				Type: DiffTypeEdited,
+				Fields: []*FieldDiff{
+					{
+						Type: DiffTypeEdited,
+						Name: "ShutdownDelay",
+						Old:  "30000000000",
+						New:  "5000000000",
+					},
+				},
+			},
+		},
+		{
+			TestCase: "TaskGroup shutdown_delay removed",
+			Old: &TaskGroup{
+				ShutdownDelay: helper.TimeToPtr(30 * time.Second),
+			},
+			New: &TaskGroup{},
+			Expected: &TaskGroupDiff{
+				Type: DiffTypeEdited,
+				Fields: []*FieldDiff{
+					{
+						Type: DiffTypeDeleted,
+						Name: "ShutdownDelay",
+						Old:  "30000000000",
+						New:  "",
+					},
+				},
+			},
+		},
+		{
+			TestCase: "TaskGroup shutdown_delay added",
+			Old:      &TaskGroup{},
+			New: &TaskGroup{
+				ShutdownDelay: helper.TimeToPtr(30 * time.Second),
+			},
+			Expected: &TaskGroupDiff{
+				Type: DiffTypeEdited,
+				Fields: []*FieldDiff{
+					{
+						Type: DiffTypeAdded,
+						Name: "ShutdownDelay",
+						Old:  "",
+						New:  "30000000000",
 					},
 				},
 			},
@@ -4866,6 +4931,12 @@ func TestTaskDiff(t *testing.T) {
 									},
 									{
 										Type: DiffTypeAdded,
+										Name: "Expose",
+										Old:  "",
+										New:  "false",
+									},
+									{
+										Type: DiffTypeAdded,
 										Name: "GRPCUseTLS",
 										Old:  "",
 										New:  "false",
@@ -4922,6 +4993,12 @@ func TestTaskDiff(t *testing.T) {
 										Type: DiffTypeDeleted,
 										Name: "Command",
 										Old:  "foo",
+										New:  "",
+									},
+									{
+										Type: DiffTypeDeleted,
+										Name: "Expose",
+										Old:  "false",
 										New:  "",
 									},
 									{
@@ -5091,6 +5168,12 @@ func TestTaskDiff(t *testing.T) {
 										Name: "Command",
 										Old:  "foo",
 										New:  "foo",
+									},
+									{
+										Type: DiffTypeNone,
+										Name: "Expose",
+										Old:  "false",
+										New:  "false",
 									},
 									{
 										Type: DiffTypeNone,

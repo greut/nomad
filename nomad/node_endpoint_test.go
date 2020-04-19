@@ -2335,7 +2335,7 @@ func TestClientEndpoint_UpdateAlloc_UnclaimVolumes(t *testing.T) {
 	err := state.UpsertNode(99, node)
 	require.NoError(t, err)
 	volId0 := uuid.Generate()
-	ns := "notTheNamespace"
+	ns := structs.DefaultNamespace
 	vols := []*structs.CSIVolume{{
 		ID:             volId0,
 		Namespace:      ns,
@@ -2406,7 +2406,7 @@ func TestClientEndpoint_UpdateAlloc_UnclaimVolumes(t *testing.T) {
 
 	// Verify the eval for the claim GC was emitted
 	// Lookup the evaluations
-	eval, err := state.EvalsByJob(ws, job.Namespace, structs.CoreJobCSIVolumeClaimGC+":"+job.ID)
+	eval, err := state.EvalsByJob(ws, job.Namespace, structs.CoreJobCSIVolumeClaimGC+":"+volId0+":no")
 	require.NotNil(t, eval)
 	require.Nil(t, err)
 }
@@ -2663,6 +2663,13 @@ func TestClientEndpoint_ListNodes(t *testing.T) {
 
 	// Create the register request
 	node := mock.Node()
+	node.HostVolumes = map[string]*structs.ClientHostVolumeConfig{
+		"foo": {
+			Name:     "foo",
+			Path:     "/",
+			ReadOnly: true,
+		},
+	}
 	reg := &structs.NodeRegisterRequest{
 		Node:         node,
 		WriteRequest: structs.WriteRequest{Region: "global"},
@@ -2688,12 +2695,11 @@ func TestClientEndpoint_ListNodes(t *testing.T) {
 		t.Fatalf("Bad index: %d %d", resp2.Index, resp.Index)
 	}
 
-	if len(resp2.Nodes) != 1 {
-		t.Fatalf("bad: %#v", resp2.Nodes)
-	}
-	if resp2.Nodes[0].ID != node.ID {
-		t.Fatalf("bad: %#v", resp2.Nodes[0])
-	}
+	require.Len(t, resp2.Nodes, 1)
+	require.Equal(t, node.ID, resp2.Nodes[0].ID)
+
+	// #7344 - Assert HostVolumes are included in stub
+	require.Equal(t, node.HostVolumes, resp2.Nodes[0].HostVolumes)
 
 	// Lookup the node with prefix
 	get = &structs.NodeListRequest{

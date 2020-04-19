@@ -15,16 +15,17 @@ import (
 )
 
 const (
-	FilterConstraintHostVolumes                = "missing compatible host volumes"
-	FilterConstraintCSIPluginTemplate          = "CSI plugin %s is missing from client %s"
-	FilterConstraintCSIPluginUnhealthyTemplate = "CSI plugin %s is unhealthy on client %s"
-	FilterConstraintCSIVolumesLookupFailed     = "CSI volume lookup failed"
-	FilterConstraintCSIVolumeNotFoundTemplate  = "missing CSI Volume %s"
-	FilterConstraintCSIVolumeNoReadTemplate    = "CSI volume %s is unschedulable or has exhausted its available reader claims"
-	FilterConstraintCSIVolumeNoWriteTemplate   = "CSI volume %s is unschedulable or is read-only"
-	FilterConstraintCSIVolumeInUseTemplate     = "CSI volume %s has exhausted its available writer claims" //
-	FilterConstraintDrivers                    = "missing drivers"
-	FilterConstraintDevices                    = "missing devices"
+	FilterConstraintHostVolumes                 = "missing compatible host volumes"
+	FilterConstraintCSIPluginTemplate           = "CSI plugin %s is missing from client %s"
+	FilterConstraintCSIPluginUnhealthyTemplate  = "CSI plugin %s is unhealthy on client %s"
+	FilterConstraintCSIPluginMaxVolumesTemplate = "CSI plugin %s has the maximum number of volumes on client %s"
+	FilterConstraintCSIVolumesLookupFailed      = "CSI volume lookup failed"
+	FilterConstraintCSIVolumeNotFoundTemplate   = "missing CSI Volume %s"
+	FilterConstraintCSIVolumeNoReadTemplate     = "CSI volume %s is unschedulable or has exhausted its available reader claims"
+	FilterConstraintCSIVolumeNoWriteTemplate    = "CSI volume %s is unschedulable or is read-only"
+	FilterConstraintCSIVolumeInUseTemplate      = "CSI volume %s has exhausted its available writer claims" //
+	FilterConstraintDrivers                     = "missing drivers"
+	FilterConstraintDevices                     = "missing devices"
 )
 
 // FeasibleIterator is used to iteratively yield nodes that
@@ -247,6 +248,26 @@ func (c *CSIVolumeChecker) hasPlugins(n *structs.Node) (bool, string) {
 	}
 
 	ws := memdb.NewWatchSet()
+
+	// Find the count per plugin for this node, so that can enforce MaxVolumes
+	pluginCount := map[string]int64{}
+	iter, err := c.ctx.State().CSIVolumesByNodeID(ws, n.ID)
+	if err != nil {
+		return false, FilterConstraintCSIVolumesLookupFailed
+	}
+	for {
+		raw := iter.Next()
+		if raw == nil {
+			break
+		}
+		vol, ok := raw.(*structs.CSIVolume)
+		if !ok {
+			continue
+		}
+		pluginCount[vol.PluginID] += 1
+	}
+
+	// For volume requests, find volumes and determine feasibility
 	for _, req := range c.volumes {
 		vol, err := c.ctx.State().CSIVolumeByID(ws, c.namespace, req.Source)
 		if err != nil {
@@ -264,6 +285,9 @@ func (c *CSIVolumeChecker) hasPlugins(n *structs.Node) (bool, string) {
 		if !plugin.Healthy {
 			return false, fmt.Sprintf(FilterConstraintCSIPluginUnhealthyTemplate, vol.PluginID, n.ID)
 		}
+		if pluginCount[vol.PluginID] >= plugin.NodeInfo.MaxVolumes {
+			return false, fmt.Sprintf(FilterConstraintCSIPluginMaxVolumesTemplate, vol.PluginID, n.ID)
+		}
 
 		if req.ReadOnly {
 			if !vol.ReadSchedulable() {
@@ -280,7 +304,7 @@ func (c *CSIVolumeChecker) hasPlugins(n *structs.Node) (bool, string) {
 			// Check the blocking allocations to see if they belong to this job
 			for id := range vol.WriteAllocs {
 				a, err := c.ctx.State().AllocByID(ws, id)
-				if err != nil || a.Namespace != c.namespace || a.JobID != c.jobID {
+				if err != nil || a == nil || a.Namespace != c.namespace || a.JobID != c.jobID {
 					return false, fmt.Sprintf(FilterConstraintCSIVolumeInUseTemplate, vol.ID)
 				}
 			}

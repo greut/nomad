@@ -1,12 +1,19 @@
-## 0.11.0 (Unreleased)
+## 0.11.1 (Unreleased)
+
+BUG FIXES:
+
+ * core: Fixed a bug that only ran a task `shutdown_delay` if the task had a registered service [[GH-7663](https://github.com/hashicorp/nomad/issues/7663)]
+ * vault: Upgrade http2 library to fix Vault API calls that fail with `http2: no cached connection was available` [[GH-7673](https://github.com/hashicorp/nomad/issues/7673)]
+
+## 0.11.0 (April 8, 2020)
 
 FEATURES:
  * **Container Storage Interface [beta]**: Nomad has expanded support
    of stateful workloads through support for CSI plugins.
- * **Exec UI [beta]**: an in-browser terminal for connecting to running allocations.
- * **Audit Logging (Enterprise) [beta]**: Audit logging support for Nomad
+ * **Exec UI**: an in-browser terminal for connecting to running allocations.
+ * **Audit Logging (Enterprise)**: Audit logging support for Nomad
    Enterprise.
- * **Scaling APIs [beta]**: new scaling policy API and job scaling APIs to support external autoscalers
+ * **Scaling APIs**: new scaling policy API and job scaling APIs to support external autoscalers
  * **Task Dependencies**: introduces `lifecycle` stanza with prestart and sidecar hooks for tasks within a task group
 
 
@@ -26,6 +33,8 @@ IMPROVEMENTS:
  * jobspec: Added task environment interpolation to `volume_mount` [[GH-7364](https://github.com/hashicorp/nomad/issues/7364)]
  * jobspec: Added support for a per-task restart policy [[GH-7288](https://github.com/hashicorp/nomad/pull/7288)]
  * server: Added minimum quorum check to Autopilot with minQuorum option [[GH-7171](https://github.com/hashicorp/nomad/issues/7171)]
+ * connect: Added support for specifying Envoy expose path configurations [[GH-7323](https://github.com/hashicorp/nomad/pull/7323)] [[GH-7396](https://github.com/hashicorp/nomad/pull/7515)]
+ * connect: Added support for using Connect with TLS enabled Consul agents [[GH-7602](https://github.com/hashicorp/nomad/pull/7602)]
 
 BUG FIXES:
 
@@ -34,16 +43,25 @@ BUG FIXES:
  * api: Fixed a panic when canonicalizing a jobspec with an incorrect job type [[GH-7207](https://github.com/hashicorp/nomad/pull/7207)]
  * api: Fixed a bug where calling the node GC or GcAlloc endpoints resulted in an error EOF return on successful requests [[GH-5970](https://github.com/hashicorp/nomad/issues/5970)]
  * api: Fixed a bug where `/client/allocations/...` (e.g. allocation stats) requests may hang in special cases after a leader election [[GH-7370](https://github.com/hashicorp/nomad/issues/7370)]
+ * cli: Fixed a bug where `nomad agent -dev` fails on Windows [[GH-7534](https://github.com/hashicorp/nomad/pull/7534)]
  * cli: Fixed a panic when displaying device plugins without stats [[GH-7231](https://github.com/hashicorp/nomad/issues/7231)]
  * cli: Fixed a bug where `alloc exec` command in TLS environments may fail [[GH-7274](https://github.com/hashicorp/nomad/issues/7274)]
  * client: Fixed a panic when running in Debian with `/etc/debian_version` is empty [[GH-7350](https://github.com/hashicorp/nomad/issues/7350)]
+ * client: Fixed a bug affecting network detection in environments that mimic the EC2 Metadata API [[GH-7509](https://github.com/hashicorp/nomad/issues/7509)]
  * client: Fixed a bug where a multi-task allocation maybe considered healthy despite a task restarting [[GH-7383](https://github.com/hashicorp/nomad/issues/7383)]
+ * consul: Fixed a bug where modified Consul service definitions would not be updated [[GH-6459](https://github.com/hashicorp/nomad/issues/6459)]
+ * connect: Fixed a bug where Connect enabled allocation would not stop after promotion [[GH-7540](https://github.com/hashicorp/nomad/issues/7540)]
+ * connect: Fixed a bug where restarting a client would prevent Connect enabled allocations from cleaning up properly [[GH-7643](https://github.com/hashicorp/nomad/issues/7643)]
+ * driver/docker: Fixed handling of seccomp `security_opts` option [[GH-7554](https://github.com/hashicorp/nomad/issues/7554)]
+ * driver/docker: Fixed a bug causing docker containers to use swap memory unexpectedly [[GH-7550](https://github.com/hashicorp/nomad/issues/7550)]
+ * scheduler: Fixed a bug where changes to task group `shutdown_delay` were not persisted or displayed in plan output [[GH-7618](https://github.com/hashicorp/nomad/issues/7618)]
+ * ui: Fixed handling of multi-byte unicode characters in allocation log view [[GH-7470](https://github.com/hashicorp/nomad/issues/7470)] [[GH-7551](https://github.com/hashicorp/nomad/pull/7551)]
 
 ## 0.10.5 (March 24, 2020)
 
 SECURITY:
 
-* server: Override content-type headers for unsafe content. CVE-TBD [[GH-7468](https://github.com/hashicorp/nomad/issues/7468)]
+ * server: Override content-type headers for unsafe content. CVE-TBD [[GH-7468](https://github.com/hashicorp/nomad/issues/7468)]
 
 ## 0.10.4 (February 19, 2020)
 

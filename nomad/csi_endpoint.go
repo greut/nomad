@@ -2,7 +2,6 @@ package nomad
 
 import (
 	"fmt"
-	"math/rand"
 	"time"
 
 	metrics "github.com/armon/go-metrics"
@@ -121,7 +120,7 @@ func (v *CSIVolume) List(args *structs.CSIVolumeListRequest, reply *structs.CSIV
 			var iter memdb.ResultIterator
 
 			if args.NodeID != "" {
-				iter, err = state.CSIVolumesByNodeID(ws, ns, args.NodeID)
+				iter, err = state.CSIVolumesByNodeID(ws, args.NodeID)
 			} else if args.PluginID != "" {
 				iter, err = state.CSIVolumesByPluginID(ws, ns, args.PluginID)
 			} else {
@@ -147,8 +146,13 @@ func (v *CSIVolume) List(args *structs.CSIVolumeListRequest, reply *structs.CSIV
 					return err
 				}
 
-				// Filter (possibly again) on PluginID to handle passing both NodeID and PluginID
+				// Remove (possibly again) by PluginID to handle passing both NodeID and PluginID
 				if args.PluginID != "" && args.PluginID != vol.PluginID {
+					continue
+				}
+
+				// Remove by Namespace, since CSIVolumesByNodeID hasn't used the Namespace yet
+				if vol.Namespace != ns {
 					continue
 				}
 
@@ -203,8 +207,8 @@ func (v *CSIVolume) Get(args *structs.CSIVolumeGetRequest, reply *structs.CSIVol
 	return v.srv.blockingRPC(&opts)
 }
 
-func (srv *Server) pluginValidateVolume(req *structs.CSIVolumeRegisterRequest, vol *structs.CSIVolume) (*structs.CSIPlugin, error) {
-	state := srv.fsm.State()
+func (v *CSIVolume) pluginValidateVolume(req *structs.CSIVolumeRegisterRequest, vol *structs.CSIVolume) (*structs.CSIPlugin, error) {
+	state := v.srv.fsm.State()
 	ws := memdb.NewWatchSet()
 
 	plugin, err := state.CSIPluginByID(ws, vol.PluginID)
@@ -220,7 +224,7 @@ func (srv *Server) pluginValidateVolume(req *structs.CSIVolumeRegisterRequest, v
 	return plugin, nil
 }
 
-func (srv *Server) controllerValidateVolume(req *structs.CSIVolumeRegisterRequest, vol *structs.CSIVolume, plugin *structs.CSIPlugin) error {
+func (v *CSIVolume) controllerValidateVolume(req *structs.CSIVolumeRegisterRequest, vol *structs.CSIVolume, plugin *structs.CSIPlugin) error {
 
 	if !plugin.ControllerRequired {
 		// The plugin does not require a controller, so for now we won't do any
@@ -228,29 +232,16 @@ func (srv *Server) controllerValidateVolume(req *structs.CSIVolumeRegisterReques
 		return nil
 	}
 
-	// The plugin requires a controller. Now we do some validation of the Volume
-	// to ensure that the registered capabilities are valid and that the volume
-	// exists.
-
-	// plugin IDs are not scoped to region/DC but volumes are.
-	// so any node we get for a controller is already in the same region/DC
-	// for the volume.
-	nodeID, err := srv.nodeForControllerPlugin(plugin)
-	if err != nil || nodeID == "" {
-		return err
-	}
-
-	method := "ClientCSIController.ValidateVolume"
+	method := "ClientCSI.ControllerValidateVolume"
 	cReq := &cstructs.ClientCSIControllerValidateVolumeRequest{
 		VolumeID:       vol.RemoteID(),
 		AttachmentMode: vol.AttachmentMode,
 		AccessMode:     vol.AccessMode,
 	}
 	cReq.PluginID = plugin.ID
-	cReq.ControllerNodeID = nodeID
 	cResp := &cstructs.ClientCSIControllerValidateVolumeResponse{}
 
-	return srv.RPC(method, cReq, cResp)
+	return v.srv.RPC(method, cReq, cResp)
 }
 
 // Register registers a new volume
@@ -281,11 +272,11 @@ func (v *CSIVolume) Register(args *structs.CSIVolumeRegisterRequest, reply *stru
 			return err
 		}
 
-		plugin, err := v.srv.pluginValidateVolume(args, vol)
+		plugin, err := v.pluginValidateVolume(args, vol)
 		if err != nil {
 			return err
 		}
-		if err := v.srv.controllerValidateVolume(args, vol, plugin); err != nil {
+		if err := v.controllerValidateVolume(args, vol, plugin); err != nil {
 			return err
 		}
 	}
@@ -360,7 +351,7 @@ func (v *CSIVolume) Claim(args *structs.CSIVolumeClaimRequest, reply *structs.CS
 	// if this is a new claim, add a Volume and PublishContext from the
 	// controller (if any) to the reply
 	if args.Claim != structs.CSIVolumeClaimRelease {
-		err = v.srv.controllerPublishVolume(args, reply)
+		err = v.controllerPublishVolume(args, reply)
 		if err != nil {
 			return fmt.Errorf("controller publish: %v", err)
 		}
@@ -378,6 +369,94 @@ func (v *CSIVolume) Claim(args *structs.CSIVolumeClaimRequest, reply *structs.CS
 	reply.Index = index
 	v.srv.setQueryMeta(&reply.QueryMeta)
 	return nil
+}
+
+// controllerPublishVolume sends publish request to the CSI controller
+// plugin associated with a volume, if any.
+func (v *CSIVolume) controllerPublishVolume(req *structs.CSIVolumeClaimRequest, resp *structs.CSIVolumeClaimResponse) error {
+	plug, vol, err := v.volAndPluginLookup(req.RequestNamespace(), req.VolumeID)
+	if err != nil {
+		return err
+	}
+
+	// Set the Response volume from the lookup
+	resp.Volume = vol
+
+	// Validate the existence of the allocation, regardless of whether we need it
+	// now.
+	state := v.srv.fsm.State()
+	ws := memdb.NewWatchSet()
+	alloc, err := state.AllocByID(ws, req.AllocationID)
+	if err != nil {
+		return err
+	}
+	if alloc == nil {
+		return fmt.Errorf("%s: %s", structs.ErrUnknownAllocationPrefix, req.AllocationID)
+	}
+
+	// if no plugin was returned then controller validation is not required.
+	// Here we can return nil.
+	if plug == nil {
+		return nil
+	}
+
+	targetNode, err := state.NodeByID(ws, alloc.NodeID)
+	if err != nil {
+		return err
+	}
+	if targetNode == nil {
+		return fmt.Errorf("%s: %s", structs.ErrUnknownNodePrefix, alloc.NodeID)
+	}
+	targetCSIInfo, ok := targetNode.CSINodePlugins[plug.ID]
+	if !ok {
+		return fmt.Errorf("Failed to find NodeInfo for node: %s", targetNode.ID)
+	}
+
+	method := "ClientCSI.ControllerAttachVolume"
+	cReq := &cstructs.ClientCSIControllerAttachVolumeRequest{
+		VolumeID:        vol.RemoteID(),
+		ClientCSINodeID: targetCSIInfo.NodeInfo.ID,
+		AttachmentMode:  vol.AttachmentMode,
+		AccessMode:      vol.AccessMode,
+		ReadOnly:        req.Claim == structs.CSIVolumeClaimRead,
+	}
+	cReq.PluginID = plug.ID
+	cResp := &cstructs.ClientCSIControllerAttachVolumeResponse{}
+
+	err = v.srv.RPC(method, cReq, cResp)
+	if err != nil {
+		return fmt.Errorf("attach volume: %v", err)
+	}
+	resp.PublishContext = cResp.PublishContext
+	return nil
+}
+
+func (v *CSIVolume) volAndPluginLookup(namespace, volID string) (*structs.CSIPlugin, *structs.CSIVolume, error) {
+	state := v.srv.fsm.State()
+	ws := memdb.NewWatchSet()
+
+	vol, err := state.CSIVolumeByID(ws, namespace, volID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if vol == nil {
+		return nil, nil, fmt.Errorf("volume not found: %s", volID)
+	}
+	if !vol.ControllerRequired {
+		return nil, vol, nil
+	}
+
+	// note: we do this same lookup in CSIVolumeByID but then throw
+	// away the pointer to the plugin rather than attaching it to
+	// the volume so we have to do it again here.
+	plug, err := state.CSIPluginByID(ws, vol.PluginID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if plug == nil {
+		return nil, nil, fmt.Errorf("plugin not found: %s", vol.PluginID)
+	}
+	return plug, vol, nil
 }
 
 // allowCSIMount is called on Job register to check mount permission
@@ -493,186 +572,4 @@ func (v *CSIPlugin) Get(args *structs.CSIPluginGetRequest, reply *structs.CSIPlu
 			return v.srv.replySetIndex(csiPluginTable, &reply.QueryMeta)
 		}}
 	return v.srv.blockingRPC(&opts)
-}
-
-// controllerPublishVolume sends publish request to the CSI controller
-// plugin associated with a volume, if any.
-func (srv *Server) controllerPublishVolume(req *structs.CSIVolumeClaimRequest, resp *structs.CSIVolumeClaimResponse) error {
-	plug, vol, err := srv.volAndPluginLookup(req.RequestNamespace(), req.VolumeID)
-	if err != nil {
-		return err
-	}
-
-	// Set the Response volume from the lookup
-	resp.Volume = vol
-
-	// Validate the existence of the allocation, regardless of whether we need it
-	// now.
-	state := srv.fsm.State()
-	ws := memdb.NewWatchSet()
-	alloc, err := state.AllocByID(ws, req.AllocationID)
-	if err != nil {
-		return err
-	}
-	if alloc == nil {
-		return fmt.Errorf("%s: %s", structs.ErrUnknownAllocationPrefix, req.AllocationID)
-	}
-
-	// if no plugin was returned then controller validation is not required.
-	// Here we can return nil.
-	if plug == nil {
-		return nil
-	}
-
-	// plugin IDs are not scoped to region/DC but volumes are.
-	// so any node we get for a controller is already in the same region/DC
-	// for the volume.
-	nodeID, err := srv.nodeForControllerPlugin(plug)
-	if err != nil || nodeID == "" {
-		return err
-	}
-
-	targetNode, err := state.NodeByID(ws, alloc.NodeID)
-	if err != nil {
-		return err
-	}
-	if targetNode == nil {
-		return fmt.Errorf("%s: %s", structs.ErrUnknownNodePrefix, alloc.NodeID)
-	}
-	targetCSIInfo, ok := targetNode.CSINodePlugins[plug.ID]
-	if !ok {
-		return fmt.Errorf("Failed to find NodeInfo for node: %s", targetNode.ID)
-	}
-
-	method := "ClientCSIController.AttachVolume"
-	cReq := &cstructs.ClientCSIControllerAttachVolumeRequest{
-		VolumeID:        vol.RemoteID(),
-		ClientCSINodeID: targetCSIInfo.NodeInfo.ID,
-		AttachmentMode:  vol.AttachmentMode,
-		AccessMode:      vol.AccessMode,
-		ReadOnly:        req.Claim == structs.CSIVolumeClaimRead,
-	}
-	cReq.PluginID = plug.ID
-	cReq.ControllerNodeID = nodeID
-	cResp := &cstructs.ClientCSIControllerAttachVolumeResponse{}
-
-	err = srv.RPC(method, cReq, cResp)
-	if err != nil {
-		return fmt.Errorf("attach volume: %v", err)
-	}
-	resp.PublishContext = cResp.PublishContext
-	return nil
-}
-
-// controllerUnpublishVolume sends an unpublish request to the CSI
-// controller plugin associated with a volume, if any.
-// TODO: the only caller of this won't have an alloc pointer handy, should it be its own request arg type?
-func (srv *Server) controllerUnpublishVolume(req *structs.CSIVolumeClaimRequest, targetNomadNodeID string) error {
-	plug, vol, err := srv.volAndPluginLookup(req.RequestNamespace(), req.VolumeID)
-	if plug == nil || vol == nil || err != nil {
-		return err // possibly nil if no controller required
-	}
-
-	ws := memdb.NewWatchSet()
-	state := srv.State()
-
-	targetNode, err := state.NodeByID(ws, targetNomadNodeID)
-	if err != nil {
-		return err
-	}
-	if targetNode == nil {
-		return fmt.Errorf("%s: %s", structs.ErrUnknownNodePrefix, targetNomadNodeID)
-	}
-	targetCSIInfo, ok := targetNode.CSINodePlugins[plug.ID]
-	if !ok {
-		return fmt.Errorf("Failed to find NodeInfo for node: %s", targetNode.ID)
-	}
-
-	// plugin IDs are not scoped to region/DC but volumes are.
-	// so any node we get for a controller is already in the same region/DC
-	// for the volume.
-	nodeID, err := srv.nodeForControllerPlugin(plug)
-	if err != nil || nodeID == "" {
-		return err
-	}
-
-	method := "ClientCSIController.DetachVolume"
-	cReq := &cstructs.ClientCSIControllerDetachVolumeRequest{
-		VolumeID:        vol.RemoteID(),
-		ClientCSINodeID: targetCSIInfo.NodeInfo.ID,
-	}
-	cReq.PluginID = plug.ID
-	cReq.ControllerNodeID = nodeID
-	return srv.RPC(method, cReq, &cstructs.ClientCSIControllerDetachVolumeResponse{})
-}
-
-func (srv *Server) volAndPluginLookup(namespace, volID string) (*structs.CSIPlugin, *structs.CSIVolume, error) {
-	state := srv.fsm.State()
-	ws := memdb.NewWatchSet()
-
-	vol, err := state.CSIVolumeByID(ws, namespace, volID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if vol == nil {
-		return nil, nil, fmt.Errorf("volume not found: %s", volID)
-	}
-	if !vol.ControllerRequired {
-		return nil, vol, nil
-	}
-
-	// note: we do this same lookup in CSIVolumeByID but then throw
-	// away the pointer to the plugin rather than attaching it to
-	// the volume so we have to do it again here.
-	plug, err := state.CSIPluginByID(ws, vol.PluginID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if plug == nil {
-		return nil, nil, fmt.Errorf("plugin not found: %s", vol.PluginID)
-	}
-	return plug, vol, nil
-}
-
-// nodeForControllerPlugin returns the node ID for a random controller
-// to load-balance long-blocking RPCs across client nodes.
-func (srv *Server) nodeForControllerPlugin(plugin *structs.CSIPlugin) (string, error) {
-	count := len(plugin.Controllers)
-	if count == 0 {
-		return "", fmt.Errorf("no controllers available for plugin %q", plugin.ID)
-	}
-	snap, err := srv.fsm.State().Snapshot()
-	if err != nil {
-		return "", err
-	}
-
-	// iterating maps is "random" but unspecified and isn't particularly
-	// random with small maps, so not well-suited for load balancing.
-	// so we shuffle the keys and iterate over them.
-	clientIDs := make([]string, count)
-	for clientID := range plugin.Controllers {
-		clientIDs = append(clientIDs, clientID)
-	}
-	rand.Shuffle(count, func(i, j int) {
-		clientIDs[i], clientIDs[j] = clientIDs[j], clientIDs[i]
-	})
-
-	for _, clientID := range clientIDs {
-		controller := plugin.Controllers[clientID]
-		if !controller.IsController() {
-			// we don't have separate types for CSIInfo depending on
-			// whether it's a controller or node. this error shouldn't
-			// make it to production but is to aid developers during
-			// development
-			err = fmt.Errorf("plugin is not a controller")
-			continue
-		}
-		_, err = getNodeForRpc(snap, clientID)
-		if err != nil {
-			continue
-		}
-		return clientID, nil
-	}
-
-	return "", err
 }
