@@ -200,11 +200,15 @@ check: ## Lint the source code
 	@golangci-lint run -j 1
 
 	@echo "==> Spell checking website..."
-	@misspell -error -source=text website/source/
+	@misspell -error -source=text website/pages/
 
 	@echo "==> Check proto files are in-sync..."
 	@$(MAKE) proto
-	@if (git status | grep -q .pb.go); then echo the following proto files are out of sync; git status |grep .pb.go; exit 1; fi
+	@if (git status -s | grep -q .pb.go); then echo the following proto files are out of sync; git status -s | grep .pb.go; exit 1; fi
+
+	@echo "==> Check format of jobspecs and HCL files..."
+	@$(MAKE) hclfmt
+	@if (git status -s | grep -q -e '\.hcl$$' -e '\.nomad$$'); then echo the following HCL files are out of sync; git status -s | grep -e '\.hcl$$' -e '\.nomad$$'; exit 1; fi
 
 	@echo "==> Check API package is isolated from rest"
 	@if go list --test -f '{{ join .Deps "\n" }}' ./api | grep github.com/hashicorp/nomad/ | grep -v -e /vendor/ -e /nomad/api/ -e nomad/api.test; then echo "  /api package depends the ^^ above internal nomad packages.  Remove such dependency"; exit 1; fi
@@ -229,7 +233,7 @@ generate-structs: ## Update generated code
 .PHONY: proto
 proto:
 	@echo "--> Generating proto bindings..."
-	@for file in $$(git ls-files "*.proto" | grep -v "vendor\/.*.proto"); do \
+	@for file in $$(git ls-files "*.proto" | grep -E -v -- "vendor\/.*.proto|demo\/.*.proto"); do \
 		protoc -I . -I ../../.. --go_out=plugins=grpc:. $$file; \
 	done
 
