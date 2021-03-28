@@ -753,6 +753,7 @@ func (c *ServiceClient) serviceRegs(ops *operations, service *structs.Service, w
 		Port:    port,
 		Meta:    meta,
 		Connect: connect, // will be nil if no Connect stanza
+		Checks:  make([]*api.AgentServiceCheck, 0, len(service.Checks)),
 	}
 	ops.regServices = append(ops.regServices, serviceReg)
 
@@ -761,8 +762,25 @@ func (c *ServiceClient) serviceRegs(ops *operations, service *structs.Service, w
 	if err != nil {
 		return nil, err
 	}
-	for _, cid := range checkIDs {
+
+	for i, cid := range checkIDs {
 		sreg.checkIDs[cid] = struct{}{}
+
+		registration := ops.regChecks[i]
+
+		serviceReg.Checks = append(serviceReg.Checks, &api.AgentServiceCheck{
+			CheckID:       registration.ID,
+			Name:          registration.Name,
+			Status:        registration.Status,
+			Timeout:       registration.Timeout,
+			Interval:      registration.Interval,
+			TLSSkipVerify: registration.TLSSkipVerify,
+			HTTP:          registration.HTTP,
+			Method:        registration.Method,
+			Header:        registration.Header,
+			TCP:           registration.TCP,
+			TTL:           registration.TTL,
+		})
 	}
 	return sreg, nil
 }
